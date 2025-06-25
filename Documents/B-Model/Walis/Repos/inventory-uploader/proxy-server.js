@@ -6,7 +6,7 @@ const fetch = require('node-fetch');
 const app = express();
 const PORT = 4000;
 //const BACKEND_URL = 'https://walis-api-106234732913.us-central1.run.app'; // Update if needed
-const BACKEND_URL = 'https://walis-api-p2bueaisoa-uc.a.run.app';
+const BACKEND_URL = 'http://localhost:8000';
 
 
 app.use(cors({
@@ -23,6 +23,17 @@ app.use('/api', async (req, res) => {
     const url = BACKEND_URL + req.originalUrl.replace(/^\/api/, '');
     // Exclude 'host' from headers
     const { host, ...headers } = req.headers;
+
+    let body;
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const contentType = req.headers['content-type'];
+      if (contentType && contentType.includes('application/json')) {
+        body = JSON.stringify(req.body); // If it's JSON, stringify the parsed body
+      } else {
+        body = req; // Otherwise, stream the raw body
+      }
+    }
+
     // Forward the request
     const response = await fetch(url, {
       method: req.method,
@@ -30,7 +41,7 @@ app.use('/api', async (req, res) => {
         ...headers,
         'Authorization': `Bearer ${token}`,
       },
-      body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
+      body,
     });
     // Forward response
     const contentType = response.headers.get('content-type');

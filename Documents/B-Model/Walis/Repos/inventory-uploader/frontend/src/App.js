@@ -20,7 +20,7 @@ function App() {
     formData.append('file_type', fileType);
 
     try {
-      const response = await fetch('http://localhost:8000/upload', {
+      const response = await fetch('http://localhost:4000/api/upload', {
         method: 'POST',
         body: formData,
       });
