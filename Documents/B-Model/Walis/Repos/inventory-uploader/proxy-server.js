@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { execSync } = require('child_process');
-const fetch = require('node-fetch');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const app = express();
 const PORT = 4000;
@@ -15,46 +15,26 @@ app.use(cors({
 }));
 app.use(express.json());
 
-app.use('/api', async (req, res) => {
-  try {
-    // Get identity token using gcloud
-    const token = execSync('gcloud auth print-identity-token').toString().trim();
-    // Build the proxied URL
-    const url = BACKEND_URL + req.originalUrl.replace(/^\/api/, '');
-    // Exclude 'host' from headers
-    const { host, ...headers } = req.headers;
-
-    let body;
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      const contentType = req.headers['content-type'];
-      if (contentType && contentType.includes('application/json')) {
-        body = JSON.stringify(req.body); // If it's JSON, stringify the parsed body
-      } else {
-        body = req; // Otherwise, stream the raw body
-      }
+// Proxy all /api requests to the backend, adding Google identity token
+app.use('/api', createProxyMiddleware({
+  target: BACKEND_URL,
+  changeOrigin: true,
+  pathRewrite: { '^/api': '' },
+  onProxyReq: (proxyReq, req, res) => {
+    try {
+      const token = execSync('gcloud auth print-identity-token').toString().trim();
+      proxyReq.setHeader('Authorization', `Bearer ${token}`);
+    } catch (err) {
+      // If token fetch fails, respond with error
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: 'Failed to fetch Google identity token', detail: err.message }));
     }
-
-    // Forward the request
-    const response = await fetch(url, {
-      method: req.method,
-      headers: {
-        ...headers,
-        'Authorization': `Bearer ${token}`,
-      },
-      body,
-    });
-    // Forward response
-    const contentType = response.headers.get('content-type');
-    res.status(response.status);
-    if (contentType && contentType.includes('application/json')) {
-      res.json(await response.json());
-    } else {
-      res.send(await response.text());
-    }
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  },
+  onError: (err, req, res) => {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: err.message }));
+  },
+}));
 
 app.listen(PORT, () => {
   console.log(`Proxy server running on http://localhost:${PORT}`);

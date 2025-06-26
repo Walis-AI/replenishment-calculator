@@ -1,0 +1,6 @@
+product_id,product_name,quantity_on_hand,updated_at,category,price
+PROD001,Laptop Dell XPS 13,25,2024-06-19T10:00:00Z,Electronics,1299.99
+PROD002,Wireless Mouse,150,2024-06-18T15:30:00Z,Accessories,29.99
+PROD003,USB-C Cable,300,2024-06-17T09:45:00Z,Accessories,12.99
+PROD004,Monitor 27",45,2024-06-16T14:20:00Z,Electronics,299.99
+PROD005,Keyboard Mechanical,80,2024-06-15T11:10:00Z,Accessories,89.99 

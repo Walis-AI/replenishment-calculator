@@ -1,9 +1,10 @@
 import io
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import bigquery
 import pandas as pd
 from datetime import datetime
+from typing import Optional, Dict, Any
 
 app = FastAPI()
 
@@ -24,40 +25,181 @@ async def root():
 async def ping():
     return {"ping": "pong"}
 
-@app.post("/upload")
-async def upload(file: UploadFile = File(...)):
+@app.post("/upload_inventory")
+async def upload_inventory(
+    file: UploadFile = File(...),
+    column_mapping: Optional[str] = Form(None)
+):
+    """
+    Upload inventory CSV with flexible column mapping.
+    """
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
 
     try:
         contents = await file.read()
         df = pd.read_csv(io.BytesIO(contents))
-
-        expected_cols = {"sku_id", "name", "stock", "last_updated"}
-        if not expected_cols.issubset(df.columns):
-            raise HTTPException(status_code=400, detail=f"CSV must contain columns: {expected_cols}")
-
+        available_columns = list(df.columns)
+        if not column_mapping:
+            auto_mapping = {}
+            sku_variations = ['sku_id', 'sku', 'product_id', 'id', 'item_id', 'product_code']
+            for col in available_columns:
+                if col.lower() in [v.lower() for v in sku_variations]:
+                    auto_mapping[col] = 'sku_id'
+                    break
+            name_variations = ['name', 'product_name', 'item_name', 'description', 'title']
+            for col in available_columns:
+                if col.lower() in [v.lower() for v in name_variations]:
+                    auto_mapping[col] = 'name'
+                    break
+            stock_variations = ['stock', 'quantity', 'quantity_on_hand', 'inventory', 'available']
+            for col in available_columns:
+                if col.lower() in [v.lower() for v in stock_variations]:
+                    auto_mapping[col] = 'stock'
+                    break
+            date_variations = ['last_updated', 'updated_at', 'modified', 'timestamp', 'date']
+            for col in available_columns:
+                if col.lower() in [v.lower() for v in date_variations]:
+                    auto_mapping[col] = 'last_updated'
+                    break
+            required_columns = {'sku_id', 'name', 'stock', 'last_updated'}
+            if not required_columns.issubset(set(auto_mapping.values())):
+                return {
+                    "message": "Column mapping required",
+                    "available_columns": available_columns,
+                    "required_columns": list(required_columns),
+                    "auto_detected_mapping": auto_mapping,
+                    "missing_columns": list(required_columns - set(auto_mapping.values()))
+                }
+            column_mapping = auto_mapping
+        else:
+            import json
+            try:
+                column_mapping = json.loads(column_mapping)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid column mapping JSON format")
+        required_columns = {'sku_id', 'name', 'stock', 'last_updated'}
+        mapped_columns = set(column_mapping.values())
+        if not required_columns.issubset(mapped_columns):
+            missing = required_columns - mapped_columns
+            raise HTTPException(status_code=400, detail=f"Missing required column mappings: {missing}")
+        source_columns = set(column_mapping.keys())
+        if not source_columns.issubset(set(available_columns)):
+            missing = source_columns - set(available_columns)
+            raise HTTPException(status_code=400, detail=f"Column mapping references non-existent columns: {missing}")
+        df_mapped = df.rename(columns=column_mapping)
+        df_final = df_mapped[list(required_columns)]
+        df_final['stock'] = pd.to_numeric(df_final['stock'], errors='coerce')
+        df_final['stock'] = df_final['stock'].fillna(0)
+        try:
+            df_final['last_updated'] = pd.to_datetime(df_final['last_updated'])
+        except:
+            df_final['last_updated'] = datetime.now()
         client = bigquery.Client(project="walis-inventory-mvp")
         table_id = "walis-inventory-mvp.warehouse_data.inventory"
-
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.CSV,
             skip_leading_rows=1,
             autodetect=True,
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
         )
-
-        # Ingest the DataFrame into BigQuery
-        job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
-        job.result()  # Wait for the job to complete
-
-        return {"message": f"File '{file.filename}' uploaded and data ingested successfully."}
-
+        job = client.load_table_from_dataframe(df_final, table_id, job_config=job_config)
+        job.result()
+        return {
+            "message": f"File '{file.filename}' uploaded and data ingested successfully.",
+            "rows_processed": len(df_final),
+            "column_mapping_used": column_mapping,
+            "final_columns": list(df_final.columns)
+        }
     except HTTPException as e:
-        # Re-raise HTTP exceptions to let FastAPI handle them
         raise e
     except Exception as e:
-        # Catch all other exceptions and return a 500 internal server error
+        raise HTTPException(status_code=500, detail=f"Failed to ingest data to BigQuery: {e}")
+
+@app.post("/upload_orders")
+async def upload_orders(
+    file: UploadFile = File(...),
+    column_mapping: Optional[str] = Form(None)
+):
+    """
+    Upload orders CSV with flexible column mapping.
+    """
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+    try:
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+        available_columns = list(df.columns)
+        if not column_mapping:
+            auto_mapping = {}
+            order_id_variations = ['order_id', 'id', 'order', 'order_number']
+            sku_variations = ['sku_id', 'sku', 'product_id', 'item_id']
+            quantity_variations = ['quantity', 'qty', 'amount', 'count']
+            order_date_variations = ['order_date', 'date', 'created_at', 'timestamp']
+            customer_id_variations = ['customer_id', 'customer', 'buyer_id', 'client_id']
+            for col in available_columns:
+                if col.lower() in [v.lower() for v in order_id_variations]:
+                    auto_mapping[col] = 'order_id'
+                if col.lower() in [v.lower() for v in sku_variations]:
+                    auto_mapping[col] = 'sku_id'
+                if col.lower() in [v.lower() for v in quantity_variations]:
+                    auto_mapping[col] = 'quantity'
+                if col.lower() in [v.lower() for v in order_date_variations]:
+                    auto_mapping[col] = 'order_date'
+                if col.lower() in [v.lower() for v in customer_id_variations]:
+                    auto_mapping[col] = 'customer_id'
+            required_columns = {'order_id', 'sku_id', 'quantity', 'order_date', 'customer_id'}
+            if not required_columns.issubset(set(auto_mapping.values())):
+                return {
+                    "message": "Column mapping required",
+                    "available_columns": available_columns,
+                    "required_columns": list(required_columns),
+                    "auto_detected_mapping": auto_mapping,
+                    "missing_columns": list(required_columns - set(auto_mapping.values()))
+                }
+            column_mapping = auto_mapping
+        else:
+            import json
+            try:
+                column_mapping = json.loads(column_mapping)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid column mapping JSON format")
+        required_columns = {'order_id', 'sku_id', 'quantity', 'order_date', 'customer_id'}
+        mapped_columns = set(column_mapping.values())
+        if not required_columns.issubset(mapped_columns):
+            missing = required_columns - mapped_columns
+            raise HTTPException(status_code=400, detail=f"Missing required column mappings: {missing}")
+        source_columns = set(column_mapping.keys())
+        if not source_columns.issubset(set(available_columns)):
+            missing = source_columns - set(available_columns)
+            raise HTTPException(status_code=400, detail=f"Column mapping references non-existent columns: {missing}")
+        df_mapped = df.rename(columns=column_mapping)
+        df_final = df_mapped[list(required_columns)]
+        df_final['quantity'] = pd.to_numeric(df_final['quantity'], errors='coerce')
+        df_final['quantity'] = df_final['quantity'].fillna(0)
+        try:
+            df_final['order_date'] = pd.to_datetime(df_final['order_date'])
+        except:
+            df_final['order_date'] = datetime.now()
+        client = bigquery.Client(project="walis-inventory-mvp")
+        table_id = "walis-inventory-mvp.warehouse_data.orders"
+        job_config = bigquery.LoadJobConfig(
+            source_format=bigquery.SourceFormat.CSV,
+            skip_leading_rows=1,
+            autodetect=True,
+            write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+        )
+        job = client.load_table_from_dataframe(df_final, table_id, job_config=job_config)
+        job.result()
+        return {
+            "message": f"File '{file.filename}' uploaded and data ingested successfully.",
+            "rows_processed": len(df_final),
+            "column_mapping_used": column_mapping,
+            "final_columns": list(df_final.columns)
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to ingest data to BigQuery: {e}")
 
 @app.post("/calculate-stockouts")
